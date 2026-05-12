@@ -1,10 +1,11 @@
 'use strict';
 
 // =================================================================
-// Budżet PWA v2
+// Budżet PWA v2.2
 // Schema v2: dodano tagi w transakcjach, transakcje cykliczne, cele
 // =================================================================
 
+const APP_VERSION = '2.2.0';        // widoczne w Ustawieniach
 const STORAGE_KEY = 'budget-pwa-v1';   // klucz zostaje, schema migruje w locie
 const SCHEMA_VERSION = 2;
 
@@ -43,7 +44,13 @@ const state = {
   categories: [],
   recurring: [],
   goals: [],
-  settings: { currency: 'zł', theme: 'dark' },
+  settings: {
+    currency: 'zł',
+    theme: 'dark',
+    lastBackupDate: null,        // YYYY-MM-DD ostatniego udanego eksportu
+    txnsSinceBackup: 0,          // licznik akcji od ostatniego backupu
+    emptyBannerDismissed: false, // czy user kliknął "to moja pierwsza wizyta"
+  },
 
   view: 'dashboard',
   selectedDate: new Date(),
@@ -182,6 +189,109 @@ function save() {
   }
 }
 
+// Inkrementuj licznik akcji od ostatniego backupu — wywoływany przy
+// każdej mutacji danych przez usera (dodanie, edycja, usunięcie transakcji
+// + wygenerowanie cyklicznych). Sygnalizuje "tu są nowe dane, zrób backup".
+function markDirty(count = 1) {
+  state.settings.txnsSinceBackup = (state.settings.txnsSinceBackup || 0) + count;
+}
+
+// =================================================================
+// Ochrona danych: persistent storage + monitorowanie backupu
+// =================================================================
+
+// Poproś przeglądarkę, żeby nie usuwała danych pod presją pamięci.
+// Działa od iOS 16.4+ i nowoczesnych przeglądarek. Best effort, ignoruj błędy.
+async function requestPersistentStorage() {
+  try {
+    if (navigator.storage && navigator.storage.persist) {
+      const granted = await navigator.storage.persist();
+      console.log('persistent storage:', granted ? 'granted' : 'denied');
+    }
+  } catch (e) {
+    // Ignoruj, to jest nice-to-have, nie krytyczne
+  }
+}
+
+// Sprawdź czy jest nowa wersja Service Workera i wymusza update.
+// User wciska przycisk w Ustawieniach gdy podejrzewa stałą wersję.
+async function checkForUpdates() {
+  if (!('serviceWorker' in navigator)) {
+    toast('Service worker niedostępny');
+    return;
+  }
+  try {
+    toast('Sprawdzam aktualizacje...');
+    const reg = await navigator.serviceWorker.getRegistration();
+    if (!reg) {
+      toast('Brak zarejestrowanego SW');
+      return;
+    }
+    // Wymuś sprawdzenie nowej wersji w sieci
+    await reg.update();
+
+    // Jeśli jest nowy SW czekający — aktywuj go natychmiast
+    if (reg.waiting) {
+      reg.waiting.postMessage('skip-waiting');
+      toast('Aktualizacja gotowa, przeładowuję...');
+      setTimeout(() => location.reload(), 800);
+      return;
+    }
+
+    // Jeśli SW akurat się instaluje
+    if (reg.installing) {
+      reg.installing.addEventListener('statechange', e => {
+        if (e.target.state === 'activated') {
+          toast('Zainstalowano, przeładowuję...');
+          setTimeout(() => location.reload(), 600);
+        }
+      });
+      toast('Pobieram aktualizację...');
+      return;
+    }
+
+    // Nic nowego — po prostu hard reload na wszelki wypadek
+    toast('Już najnowsza. Odświeżam...');
+    setTimeout(() => location.reload(), 800);
+  } catch (err) {
+    console.error('update check failed', err);
+    toast('Błąd sprawdzania aktualizacji');
+  }
+}
+
+// Sprawdź stan zdrowia backupu — używane do kolorowania stopki i bannerów
+function checkBackupHealth() {
+  const txnCount = state.transactions.length + state.recurring.length + state.goals.length;
+  const last = state.settings.lastBackupDate;
+
+  if (txnCount === 0) {
+    return { level: 'empty', daysSince: null, txnsSince: 0 };
+  }
+
+  const txnsSince = state.settings.txnsSinceBackup || 0;
+
+  if (!last) {
+    return { level: 'never', daysSince: null, txnsSince };
+  }
+
+  const daysSince = Math.floor((Date.now() - new Date(last + 'T00:00:00').getTime()) / 86400000);
+  let level = 'ok';
+  if (daysSince >= 14) level = 'danger';
+  else if (daysSince >= 7) level = 'warn';
+
+  return { level, daysSince, txnsSince };
+}
+
+// Czy apka wygląda na "świeżą instalację" (potencjalnie po utracie danych)?
+function isLikelyFreshInstall() {
+  if (state.settings.emptyBannerDismissed) return false;
+  if (state.transactions.length > 0) return false;
+  if (state.recurring.length > 0) return false;
+  if (state.goals.length > 0) return false;
+  if (state.settings.lastBackupDate) return false;  // wcześniej był backup → user nie jest świeży
+  return true;
+}
+
 // =================================================================
 // Generator transakcji cyklicznych
 // Uruchamiany przy starcie, dogania wszystkie wpisy do dziś.
@@ -262,6 +372,7 @@ function generateRecurring() {
   });
 
   if (generated > 0) {
+    markDirty(generated);
     save();
     setTimeout(() => toast(`Dodano ${generated} ${generated === 1 ? 'transakcję cykliczną' : 'transakcje cykliczne'}`), 300);
   }
@@ -304,6 +415,37 @@ function render() {
 
 // ----- Dashboard -----
 function renderDashboard(main) {
+  // BANNER pustego stanu — pokaż gdy apka wygląda na świeżą instalację
+  // i user jeszcze nie odrzucił bannera. To główne zabezpieczenie przed
+  // przypadkowym nadpisaniem stanu po reinstalacji.
+  if (isLikelyFreshInstall()) {
+    const banner = document.createElement('div');
+    banner.className = 'alert-banner';
+    banner.innerHTML = `
+      <div class="alert-icon">⚠</div>
+      <div class="alert-body">
+        <strong>Apka jest pusta</strong>
+        <p>Jeśli to twoja pierwsza wizyta — śmiało dodawaj transakcje.<br>
+        Ale jeśli masz <strong>backup z innego urządzenia lub poprzedniej instalacji</strong>, najpierw go zaimportuj, zanim cokolwiek dodasz.</p>
+        <div class="alert-actions">
+          <label class="btn">
+            Importuj backup
+            <input type="file" accept=".json,application/json" id="banner-import" style="display:none">
+          </label>
+          <button class="btn secondary" id="banner-dismiss">To moja pierwsza wizyta</button>
+        </div>
+      </div>
+    `;
+    main.appendChild(banner);
+
+    banner.querySelector('#banner-import').addEventListener('change', importData);
+    banner.querySelector('#banner-dismiss').addEventListener('click', () => {
+      state.settings.emptyBannerDismissed = true;
+      save();
+      render();
+    });
+  }
+
   const txns = getTxnsInPeriod(state.selectedDate, 'month');
   const expenses = txns.filter(t => t.type === 'expense');
   const incomes  = txns.filter(t => t.type === 'income');
@@ -464,6 +606,37 @@ function renderDashboard(main) {
         main.appendChild(row);
       });
     }
+  }
+
+  // ----- Stopka: status backupu -----
+  // Pokazuj zawsze gdy są jakieś dane, bo to przypomnienie krytyczne dla
+  // bezpieczeństwa. Kolor sygnalizuje pilność.
+  const health = checkBackupHealth();
+  if (health.level !== 'empty') {
+    const footer = document.createElement('div');
+    footer.className = `backup-status ${health.level}`;
+
+    let label;
+    if (health.level === 'never') {
+      label = 'Nigdy nie zrobiłeś backupu. Eksportuj teraz.';
+    } else if (health.daysSince === 0) {
+      label = 'Backup: dzisiaj ✓';
+    } else if (health.daysSince === 1) {
+      label = 'Backup: wczoraj';
+    } else {
+      label = `Backup: ${health.daysSince} dni temu`;
+    }
+    if (health.txnsSince > 0 && health.level !== 'never') {
+      label += ` · ${health.txnsSince} ${health.txnsSince === 1 ? 'nowa transakcja' : 'nowych'}`;
+    }
+
+    footer.innerHTML = `
+      <div class="backup-status-icon">${health.level === 'danger' ? '⚠' : health.level === 'warn' ? '◐' : '●'}</div>
+      <div class="backup-status-text">${escapeHtml(label)}</div>
+      <button class="btn-mini" id="backup-now-btn">Backup teraz</button>
+    `;
+    footer.querySelector('#backup-now-btn').addEventListener('click', exportData);
+    main.appendChild(footer);
   }
 }
 
@@ -1074,9 +1247,27 @@ function renderSettings(main) {
     toast('Dane wyczyszczone');
   });
 
+  // ----- Aplikacja -----
+  const appTitle = document.createElement('h2');
+  appTitle.className = 'section-title';
+  appTitle.textContent = 'Aplikacja';
+  main.appendChild(appTitle);
+
+  const versionRow = document.createElement('div');
+  versionRow.className = 'setting-row';
+  versionRow.innerHTML = `
+    <div>
+      <div style="font-size: 14px; font-weight: 500;">Wersja</div>
+      <div style="font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); margin-top: 2px;">${APP_VERSION}</div>
+    </div>
+    <button class="btn-mini" id="check-update-btn">Sprawdź aktualizacje</button>
+  `;
+  versionRow.querySelector('#check-update-btn').addEventListener('click', checkForUpdates);
+  main.appendChild(versionRow);
+
   const info = document.createElement('div');
-  info.style.cssText = 'text-align:center; color: var(--text-dim); font-size: 11px; margin-top: 28px; padding: 8px 0 20px; font-family: var(--font-mono); letter-spacing: 0.05em;';
-  info.textContent = `BUDŻET v2 · ${state.transactions.length} TXN · ${state.recurring.length} REC · ${state.goals.length} CEL`;
+  info.style.cssText = 'text-align:center; color: var(--text-dim); font-size: 11px; margin-top: 16px; padding: 8px 0 20px; font-family: var(--font-mono); letter-spacing: 0.05em;';
+  info.textContent = `${state.transactions.length} TXN · ${state.recurring.length} REC · ${state.goals.length} CEL`;
   main.appendChild(info);
 }
 
@@ -1265,9 +1456,11 @@ function openTransactionModal(existing, prefill = {}) {
       if (existing) {
         const idx = state.transactions.findIndex(t => t.id === existing.id);
         if (idx >= 0) state.transactions[idx] = { id: existing.id, ...payload };
+        markDirty();
         toast('Zapisano');
       } else {
         state.transactions.push({ id: uid(), ...payload });
+        markDirty();
         toast('Dodano');
       }
       save();
@@ -1279,6 +1472,7 @@ function openTransactionModal(existing, prefill = {}) {
       overlay.querySelector('#delete-btn').addEventListener('click', () => {
         if (!confirm('Usunąć tę transakcję?')) return;
         state.transactions = state.transactions.filter(t => t.id !== existing.id);
+        markDirty();
         save();
         closeModal();
         render();
@@ -1618,7 +1812,7 @@ function closeModal() {
 // =================================================================
 // Export / Import
 // =================================================================
-function exportData() {
+async function exportData() {
   const data = {
     app: 'budzet-pwa',
     schemaVersion: SCHEMA_VERSION,
@@ -1629,16 +1823,79 @@ function exportData() {
     goals: state.goals,
     settings: state.settings,
   };
-  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `budzet-${new Date().toISOString().slice(0, 10)}.json`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-  toast('Wyeksportowano plik JSON');
+  const json = JSON.stringify(data, null, 2);
+  const filename = `budzet-${new Date().toISOString().slice(0, 10)}.json`;
+  const blob = new Blob([json], { type: 'application/json' });
+
+  let success = false;
+  let usedMethod = '';
+
+  // 1. Próba: Web Share API z plikiem — na iOS pokazuje natywny panel Udostępnij,
+  //    z którego można wybrać Files → iCloud Drive jednym tapnięciem.
+  try {
+    if (navigator.canShare && typeof File !== 'undefined') {
+      const file = new File([blob], filename, { type: 'application/json' });
+      if (navigator.canShare({ files: [file] })) {
+        await navigator.share({
+          files: [file],
+          title: 'Backup budżetu',
+          text: filename,
+        });
+        success = true;
+        usedMethod = 'share';
+      }
+    }
+  } catch (err) {
+    // User mógł anulować share — wtedy AbortError. Inne błędy też pomijamy
+    // i lecimy do fallbacku.
+    if (err.name !== 'AbortError') console.warn('share failed:', err);
+    // Jeśli user anulował, NIE oznaczamy jako zapisane — niech spróbuje ponownie.
+    if (err.name === 'AbortError') return;
+  }
+
+  // 2. Fallback: klasyczne pobranie pliku (działa na desktopie i Androidzie).
+  if (!success) {
+    try {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      success = true;
+      usedMethod = 'download';
+    } catch (err) {
+      console.warn('download failed:', err);
+    }
+  }
+
+  // 3. Ostatnia deska ratunku: schowek. Można wkleić do Notatek i tam żyje.
+  if (!success) {
+    try {
+      await navigator.clipboard.writeText(json);
+      success = true;
+      usedMethod = 'clipboard';
+      alert('Skopiowano backup do schowka. Wklej go do Notatek lub innego bezpiecznego miejsca.');
+    } catch (err) {
+      console.error('clipboard failed:', err);
+    }
+  }
+
+  if (success) {
+    // Oznacz że backup się udał
+    state.settings.lastBackupDate = todayISO();
+    state.settings.txnsSinceBackup = 0;
+    save();
+    const msg = usedMethod === 'share' ? 'Backup zapisany'
+              : usedMethod === 'clipboard' ? 'Backup w schowku'
+              : 'Backup pobrany';
+    toast(msg);
+    render();
+  } else {
+    toast('Nie udało się zapisać backupu');
+  }
 }
 
 function importData(e) {
@@ -1676,6 +1933,7 @@ function importData(e) {
 // =================================================================
 function init() {
   load();
+  requestPersistentStorage();   // poproś Safari, żeby nie eksmitowało danych
   generateRecurring();   // dogonienie transakcji cyklicznych po starcie
 
   document.querySelectorAll('.nav-btn').forEach(btn => {

@@ -999,6 +999,96 @@ input, select, textarea { font-family: inherit; }
   to { opacity: 1; transform: translate(-50%, 0); }
 }
 
+/* ----- Alert banner (świeża instalacja, ostrzeżenie o utracie) ----- */
+.alert-banner {
+  background: linear-gradient(135deg, rgba(212, 160, 74, 0.18), rgba(217, 119, 87, 0.12));
+  border: 1px solid var(--warning);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+  margin-bottom: 16px;
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+}
+.alert-icon {
+  font-size: 28px;
+  color: var(--warning);
+  font-family: var(--font-display);
+  line-height: 1;
+  flex-shrink: 0;
+}
+.alert-body { flex: 1; min-width: 0; }
+.alert-body strong {
+  font-family: var(--font-display);
+  font-size: 17px;
+  font-variation-settings: 'opsz' 24;
+  font-weight: 600;
+  display: block;
+  margin-bottom: 4px;
+}
+.alert-body p {
+  margin: 0 0 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+}
+.alert-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.alert-actions .btn {
+  padding: 9px 16px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.alert-actions label.btn { cursor: pointer; }
+
+/* ----- Backup status w stopce pulpitu ----- */
+.backup-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  margin-top: 24px;
+  font-size: 12px;
+}
+.backup-status-icon {
+  font-size: 10px;
+  color: var(--income);
+  flex-shrink: 0;
+}
+.backup-status-text {
+  flex: 1;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  font-feature-settings: 'tnum';
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.backup-status.warn {
+  border-color: var(--warning);
+  background: rgba(212, 160, 74, 0.08);
+}
+.backup-status.warn .backup-status-icon { color: var(--warning); }
+.backup-status.warn .backup-status-text { color: var(--warning); }
+.backup-status.danger {
+  border-color: var(--expense);
+  background: rgba(196, 84, 75, 0.1);
+}
+.backup-status.danger .backup-status-icon { color: var(--expense); font-size: 14px; }
+.backup-status.danger .backup-status-text { color: var(--expense); font-weight: 600; }
+.backup-status.never {
+  border-color: var(--expense);
+  background: rgba(196, 84, 75, 0.15);
+}
+.backup-status.never .backup-status-icon { color: var(--expense); font-size: 14px; }
+.backup-status.never .backup-status-text { color: var(--expense); font-weight: 600; }
+
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
