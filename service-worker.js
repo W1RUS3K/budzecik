@@ -1,6 +1,6 @@
 // Service worker: cache app shell for offline use.
 // Bump CACHE_VERSION whenever you change app files to force users to update.
-const CACHE_VERSION = 'budget-v1';
+const CACHE_VERSION = 'budget-v2';
 const ASSETS = [
   './',
   './index.html',
@@ -34,7 +34,6 @@ self.addEventListener('activate', event => {
   self.clients.claim();
 });
 
-// Cache-first for cached assets, network-fallback. Cache dynamic GETs too (fonts).
 self.addEventListener('fetch', event => {
   if (event.request.method !== 'GET') return;
   const url = new URL(event.request.url);
@@ -44,7 +43,6 @@ self.addEventListener('fetch', event => {
       if (cached) return cached;
       return fetch(event.request)
         .then(response => {
-          // Cache successful responses from same origin, jsdelivr, or google fonts.
           const ok = response && response.ok;
           const shouldCache =
             url.origin === self.location.origin ||
