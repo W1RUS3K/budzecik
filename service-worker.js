@@ -3,7 +3,7 @@
 // CACHE-FIRST dla pozostałych assetów (ikony, fonty, Chart.js).
 // Dzięki temu apka aktualizuje się sama przy otwarciu — bez konieczności
 // force-quit z multitaskingu.
-const CACHE_VERSION = 'budget-v2-2';
+const CACHE_VERSION = 'budget-v2-2-1';
 
 const APP_SHELL = [
   './',
