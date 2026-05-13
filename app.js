@@ -5,7 +5,7 @@
 // Schema v2: dodano tagi w transakcjach, transakcje cykliczne, cele
 // =================================================================
 
-const APP_VERSION = '2.2.0';        // widoczne w Ustawieniach
+const APP_VERSION = '2.2.1';        // widoczne w Ustawieniach
 const STORAGE_KEY = 'budget-pwa-v1';   // klucz zostaje, schema migruje w locie
 const SCHEMA_VERSION = 2;
 
@@ -1281,6 +1281,14 @@ function emptyState(title, msg) {
 // =================================================================
 // MODAL: transakcja (z tagami)
 // =================================================================
+
+// Helper renderujący tylko HTML pojedynczych podpowiedzi tagów.
+// Wynik wrzucany do kontenera #tag-suggestions-list — bez przebudowy całego modala.
+function renderTagSuggestionsHtml(suggestions) {
+  if (suggestions.length === 0) return '';
+  return suggestions.map(t => `<button type="button" class="tag-suggestion" data-tag="${escapeHtml(t)}">#${escapeHtml(t)}</button>`).join('');
+}
+
 function openTransactionModal(existing, prefill = {}) {
   const overlay = document.getElementById('modal-overlay');
   overlay.hidden = false;
@@ -1295,6 +1303,7 @@ function openTransactionModal(existing, prefill = {}) {
     tags: [],
   };
   let tagInput = '';
+  let isFirstRender = true;  // żeby auto-focus pola kwoty nie kradł focusu przy każdym re-renderze
 
   const renderModal = () => {
     const cats = state.categories.filter(c => c.type === draft.type);
@@ -1349,10 +1358,9 @@ function openTransactionModal(existing, prefill = {}) {
               ${draft.tags.map((tag, i) => `<span class="tag-chip-editable" data-idx="${i}">#${escapeHtml(tag)} <span class="tag-remove">×</span></span>`).join('')}
               <input type="text" id="tag-input" placeholder="${draft.tags.length === 0 ? 'np. rajd, urlop, prezent' : ''}" value="${escapeHtml(tagInput)}" autocomplete="off">
             </div>
-            ${suggestions.length > 0 ? `
-              <div class="tag-suggestions">
-                ${suggestions.map(t => `<button class="tag-suggestion" data-tag="${escapeHtml(t)}">#${escapeHtml(t)}</button>`).join('')}
-              </div>` : ''}
+            <div class="tag-suggestions" id="tag-suggestions-list">
+              ${renderTagSuggestionsHtml(suggestions)}
+            </div>
           </div>
         </div>
 
@@ -1385,15 +1393,38 @@ function openTransactionModal(existing, prefill = {}) {
       chip.classList.add('selected');
     });
 
-    // Tag input — Enter / przecinek dodaje
+    // Helper: oblicza listę podpowiedzi na podstawie aktualnego wpisu w polu tagów
+    const computeSuggestions = () => {
+      if (!tagInput.trim()) return [];
+      return existingTags
+        .filter(t => t.toLowerCase().includes(tagInput.toLowerCase()) && !draft.tags.includes(t))
+        .slice(0, 6);
+    };
+
+    // Podłącz handlery klików do widocznych aktualnie podpowiedzi.
+    // Wywoływane po początkowym renderze i po każdej podmianie listy w miejscu.
+    const attachSuggestionHandlers = () => {
+      overlay.querySelectorAll('#tag-suggestions-list .tag-suggestion').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const tag = btn.dataset.tag;
+          if (!draft.tags.includes(tag)) draft.tags.push(tag);
+          tagInput = '';
+          renderModal();
+          overlay.querySelector('#tag-input')?.focus();
+        });
+      });
+    };
+
+    // Tag input — pisanie aktualizuje TYLKO listę podpowiedzi w miejscu,
+    // bez przebudowy całego modala. Wcześniej re-render kradł focus do pola kwoty.
     const tagInputEl = overlay.querySelector('#tag-input');
     tagInputEl.addEventListener('input', e => {
       tagInput = e.target.value;
-      // Re-render only suggestions area (rerender all to be safe)
-      const cursorAt = e.target.selectionStart;
-      renderModal();
-      const newInput = overlay.querySelector('#tag-input');
-      if (newInput) { newInput.focus(); newInput.setSelectionRange(cursorAt, cursorAt); }
+      const sugList = overlay.querySelector('#tag-suggestions-list');
+      if (sugList) {
+        sugList.innerHTML = renderTagSuggestionsHtml(computeSuggestions());
+        attachSuggestionHandlers();
+      }
     });
     tagInputEl.addEventListener('keydown', e => {
       if (e.key === 'Enter' || e.key === ',') {
@@ -1412,18 +1443,10 @@ function openTransactionModal(existing, prefill = {}) {
       }
     });
 
-    // Klikanie sugestii
-    overlay.querySelectorAll('.tag-suggestion').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const tag = btn.dataset.tag;
-        if (!draft.tags.includes(tag)) draft.tags.push(tag);
-        tagInput = '';
-        renderModal();
-        overlay.querySelector('#tag-input')?.focus();
-      });
-    });
+    // Pierwsze podłączenie handlerów do podpowiedzi
+    attachSuggestionHandlers();
 
-    // Usuwanie tagów
+    // Usuwanie tagów (klik w chip)
     overlay.querySelectorAll('.tag-chip-editable').forEach(chip => {
       chip.addEventListener('click', () => {
         const idx = parseInt(chip.dataset.idx, 10);
@@ -1480,9 +1503,10 @@ function openTransactionModal(existing, prefill = {}) {
       });
     }
 
-    if (!existing) {
+    if (!existing && isFirstRender) {
       setTimeout(() => overlay.querySelector('#amount-input')?.focus(), 80);
     }
+    isFirstRender = false;
   };
 
   renderModal();
